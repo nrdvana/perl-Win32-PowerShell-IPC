@@ -12,8 +12,8 @@ use Carp;
 =head1 SYNOPSIS
 
   my $ps= Win32::PowerShell::IPC->new();
-  $ps->run_or_die('encrypted_pass = "'.$password.'" | ConvertTo-SecureString -AsPlainText -Force');
-  $ps->run_or_die('credential = New-Object System.Management.Automation.PSCredential'
+  $ps->run_or_die('$encrypted_pass = "'.$password.'" | ConvertTo-SecureString -AsPlainText -Force');
+  $ps->run_or_die('$credential = New-Object System.Management.Automation.PSCredential'
     .' -ArgumentList "'.$username.'", $encrypted_pass');
   $ps->run_or_die('$sess = New-PSSession -ConfigurationName Microsoft.Exchange'
     .' -ConnectionUri https://ps.outlook.com/powershell'
@@ -125,7 +125,7 @@ sub spawn {
 		return;
 	}
 	
-	# make sure we have this before muking around with file handles
+	# make sure we have this before mucking around with file handles
 	my $exe= $self->exe_path;
 	
 	my ($in_r, $in_w, $out_r, $out_w, $save_stdin, $save_stdout, $save_stderr);
