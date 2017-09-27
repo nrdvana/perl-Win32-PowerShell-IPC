@@ -7,7 +7,7 @@ use Win32API::File 'FdGetOsFHandle';
 use Try::Tiny;
 use Carp;
 
-# ABSTRACT Set up IPC between Perl and a PowerShell child process
+# ABSTRACT: Set up IPC between Perl and a PowerShell child process
 
 =head1 SYNOPSIS
 
@@ -233,7 +233,7 @@ sub begin_command {
   my $output= $ps->collect_command;
 
 This blocks until it receives the full output from your oldest pending
-command, and no other command. (you may have multiple pending commands pending)
+command, and no other command. (you may have multiple pending commands)
 This module delimits the output with "echo" statements so that it can tell
 where the output of a command ends, but you shouldn't ever see signs of this
 implementation detail.  I hope.
@@ -327,12 +327,6 @@ sub read_more {
 	return $ret;
 }
 
-sub _build_stdout_h {
-	my $self= shift;
-	my $out= $self->stdout or croak "Stdout not open";
-	return FdGetOsFHandle(fileno($out));
-}
-
 =head2 stdout_readable
 
   if ($ps->stdout_readable) {
@@ -385,6 +379,12 @@ Returns true if it succeeded.  Check C<< Win32::FormatMessage(Win32::GetLastErro
 otherwise.
 
 =cut
+
+sub _build_stdout_h {
+	my $self= shift;
+	my $out= $self->stdout or croak "Stdout not open";
+	return FdGetOsFHandle(fileno($out));
+}
 
 sub stdout_readable {
 	my $self= shift;
