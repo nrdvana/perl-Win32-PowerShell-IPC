@@ -13,14 +13,18 @@ use Log::Any '$log';
 =head1 SYNOPSIS
 
   my $ps= Win32::PowerShell::IPC->new();
-  $ps->run_or_die('$encrypted_pass = "'.$password.'" | ConvertTo-SecureString -AsPlainText -Force');
+  
+  # Set up MS Exchange remote session, which takes a dozen seconds
+  
+  $ps->run_or_die('$pw = "'.$pass.'" | ConvertTo-SecureString -AsPlainText -Force');
   $ps->run_or_die('$credential = New-Object System.Management.Automation.PSCredential'
-    .' -ArgumentList "'.$username.'", $encrypted_pass');
-  $ps->run_or_die('$sess = New-PSSession -ConfigurationName Microsoft.Exchange'
-    .' -ConnectionUri https://ps.outlook.com/powershell'
-    .' -Credential $credential -Authentication Basic -AllowRedirection');
-  $ps->run_or_die('Import-PSSession $sess');
-  # Followed by interactive use of the Exchange methods that PowerShell now has access to
+                 .' -ArgumentList "'.$username.'", $pw');
+  $ps->run_or_die('$session = New-PSSession -ConfigurationName Microsoft.Exchange'
+                 .' -ConnectionUri https://ps.outlook.com/powershell'
+                 .' -Credential $credential -Authentication Basic -AllowRedirection');
+  $ps->run_or_die('Import-PSSession $session');
+  
+  # Now run all sorts of methods without waiting again!
 
 =head1 DESCRIPTION
 
@@ -38,14 +42,25 @@ excels at messy stuff like this.
 
 PowerShell also seems to offer an option to exchange commands and results as
 XML, which would be a lot more reliable than text, but I haven't explored
-this yet.  Patches welcome.  (and good grief, haven't they learned JSON over
-at Redmond, yet?)
+this yet.  Patches welcome.  (and good grief, haven't they discovered JSON
+over at Redmond, yet?)
 
 =head1 ATTRIBUTES
 
 =head2 running
 
 Whether PowerShell is running
+
+=head2 exe_options
+
+Hashref of options to pass to PowerShell.exe
+The default is C<< { -ExecutionPolicy => 'RemoteSigned' } >> and there is also
+an implied C<< { -Command => "-" } >> which is required for the piping to work.
+
+=head2 exe_cmdline
+
+Lazy-built from exe_options.  You can override this if you want, but make sure
+to include C< "-Command -" >
 
 =head2 exe_path
 
@@ -86,8 +101,10 @@ stream contents that might follow the end of a command output.
 =cut
 
 sub running       { defined shift->proc }
-has exe_path      => ( is => 'rw', lazy => 1, builder => 1 );
 has cleanup_delay => ( is => 'rw', default => sub { 2000 } );
+has exe_options   => ( is => 'rw', default => sub { +{ -ExecutionPolicy => 'RemoteSigned' } } );
+has exe_cmdline   => ( is => 'rw', lazy => 1, builder => 1 );
+has exe_path      => ( is => 'rw', lazy => 1, builder => 1 );
 has proc          => ( is => 'rwp' );
 
 has stdin         => ( is => 'rwp' );
@@ -119,6 +136,13 @@ sub _build_exe_path {
 	$log->debug("Found PowerShell.exe at $exe") if $log->is_debug;
 	return $exe;
 }
+ 
+sub _build_exe_cmdline {
+	my $self= shift;
+	my %opts= %{ $self->exe_options };
+	delete $opts{'-Command'};
+	return join(' ', 'PowerShell.exe', map "$_ $opts{$_}", sort keys %opts).' -Command -';
+}
 
 sub spawn {
 	my $self= shift;
@@ -129,6 +153,8 @@ sub spawn {
 	
 	# make sure we have this before mucking around with file handles
 	my $exe= $self->exe_path;
+	my $cmdline= $self->exe_cmdline;
+	$cmdline =~ /-Command -/ or die "Powershell command line must contain '-Command -'";
 	
 	my ($in_r, $in_w, $out_r, $out_w, $save_stdin, $save_stdout, $save_stderr);
 	
@@ -147,8 +173,9 @@ sub spawn {
 		open STDOUT, '>&', $out_w or die "Can't redirect STDOUT: $!\n";
 		open $save_stderr, '>&', \*STDERR or die "Can't save STDERR: $!\n";
 		open STDERR, '>&', $out_w or die "Can't redirect STDERR: $!\n";
+		$log->tracef('Launching %s "%s"', $exe, $cmdline);
 		Win32::Process::Create(
-			my $proc, $exe, "PowerShell -Command -",
+			my $proc, $exe, $cmdline,
 			1, # inherit handles
 			Win32::Process->NORMAL_PRIORITY_CLASS,
 			'.' # cur dir
