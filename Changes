@@ -1,3 +1,4 @@
-Version 0.00_01 - 2017-09-27
+Version 0.01 - 2017-09-28
   * Exchanges simple ASCII text with PowerShell
-
+  * Terminates child processes before global destruction
+  * Debug/Trace logging via Log::Any
