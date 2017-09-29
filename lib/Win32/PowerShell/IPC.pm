@@ -4,6 +4,7 @@ use Win32;
 use Win32::API;
 use Win32::Process;
 use Win32API::File 'FdGetOsFHandle';
+use Scalar::Util 'weaken';
 use Try::Tiny;
 use Carp;
 use Log::Any '$log';
@@ -70,8 +71,8 @@ child process is started.
 
 =head2 proc
 
-The L<Win32::Process> of PowerShell, initialized by L</spawn> or by calling any
-of the run/begin methods.
+The L<Win32::Process> of PowerShell, initialized by L</start_shell> or by
+calling any of the run/begin methods.
 
 =head2 cleanup_delay
 
@@ -123,7 +124,7 @@ has _command_seq_number => ( is => 'rw', default => sub { 0 } );
 Standard Moo constructor.  All attributes are optional.
 You might consider setting L</cleanup_delay> or L</exe_path>
 
-=head2 spawn
+=head2 start_shell
 
 Start the PowerShell process.  Dies on any failure.  Returns true.
 
@@ -136,7 +137,7 @@ sub _build_exe_path {
 	$log->debug("Found PowerShell.exe at $exe") if $log->is_debug;
 	return $exe;
 }
- 
+
 sub _build_exe_cmdline {
 	my $self= shift;
 	my %opts= %{ $self->exe_options };
@@ -144,7 +145,15 @@ sub _build_exe_cmdline {
 	return join(' ', 'PowerShell.exe', map "$_ $opts{$_}", sort keys %opts).' -Command -';
 }
 
-sub spawn {
+our %_current_shells;
+END {
+	my @active= grep { defined } values %_current_shells;
+	$log->debugf("Ending %d leftover powershell processes before global destruction", scalar @active)
+		if @active;
+	$_->terminate_shell for @active;
+}
+
+sub start_shell {
 	my $self= shift;
 	if ($self->running) {
 		carp "Subprocess is already running\n";
@@ -185,6 +194,7 @@ sub spawn {
 		$self->_set_stdout($out_r);
 		$self->rbuf('');
 		@{ $self->_command_boundary }= ();
+		weaken($_current_shells{$self->proc->GetProcessID}= $self);
 	}
 	catch {
 		chomp;
@@ -207,12 +217,17 @@ sub _wait_or_kill {
 	my ($self, $timeout, $kill)= @_;
 	return 1 unless $self->proc;
 	my $exit_code;
+	syswrite($self->stdin, "exit\r\n") if $kill;
 	if ($self->proc->Wait($timeout)) {
-		$self->proc->GetExitCode($exit_code);
+		$self->proc->GetExitCode($exit_code= -1);
+		$log->debug("PowerShell exited with code $exit_code");
 	} elsif ($kill) {
+		$log->warn("Timeout expired, terminating powershell process ".$self->proc->GetProcessID());
 		$self->proc->Kill(255);
+		$exit_code= 255;
 	}
-	if ($kill or defined $exit_code) {
+	if (defined $exit_code) {
+		delete $_current_shells{$self->proc->GetProcessID};
 		$self->_set_proc(undef);
 		$self->_set_stdin(undef);
 		$self->_set_stdout(undef);
@@ -222,15 +237,24 @@ sub _wait_or_kill {
 	return 0;
 }
 
+=head2 terminate_shell
+
+Send "exit" command to shell, then wait up to L</cleanup_delay> milliseconds
+for it to exit.  If it doesn't, then kill it forcibly.
+
+Note that terminate_shell is called when the object goes out of scope,
+or before global destruction at the END{} of the perl script.
+
+=cut
+
+sub terminate_shell {
+	my $self= shift;
+	$self->_wait_or_kill($self->cleanup_delay, 1);
+}
+
 sub DESTROY {
 	my $self= shift;
-	# If powershell is still running, tell it to exit, and give it 2 seconds
-	# to exit gracefully before killing it.
-	if ($self->running) {
-		try { $self->write_all("exit\r\n"); };
-		$self->_wait_or_kill($self->cleanup_delay, 1)
-			if $self->running; # write_all can also reap the process
-	}
+	$self->terminate_shell if $self->running;
 }
 
 =head2 begin_command
@@ -246,7 +270,7 @@ command.
 
 sub begin_command {
 	my ($self, $command)= @_;
-	$self->spawn unless $self->running;
+	$self->start_shell unless $self->running;
 	my $boundary;
 	do {
 		$boundary= sprintf('END_COMMAND_%d_%X_%s', ++$self->{_command_seq_number}, time, rand)

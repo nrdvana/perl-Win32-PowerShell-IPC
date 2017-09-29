@@ -9,7 +9,7 @@ use_ok 'Win32::PowerShell::IPC';
 
 my $ps= new_ok( 'Win32::PowerShell::IPC', [], 'IPC instance' );
 
-ok( $ps->spawn, 'Start child process' );
+ok( $ps->start_shell, 'Start child process' );
 
 is( $ps->run_command("echo Foo"), "Foo\r\n", 'Run echo command' );
 
