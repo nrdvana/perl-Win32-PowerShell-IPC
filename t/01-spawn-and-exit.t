@@ -3,6 +3,7 @@ use strict;
 use warnings;
 use Win32;
 use Test::More;
+use Log::Any::Adapter 'TAP';
 
 use_ok 'Win32::PowerShell::IPC';
 

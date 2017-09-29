@@ -6,6 +6,7 @@ use Win32::Process;
 use Win32API::File 'FdGetOsFHandle';
 use Try::Tiny;
 use Carp;
+use Log::Any '$log';
 
 # ABSTRACT: Set up IPC between Perl and a PowerShell child process
 
@@ -115,6 +116,7 @@ sub _build_exe_path {
 	# Find PowerShell executable in PATH.  (CreateProcess ought to do this but doesn't for some reason?)
 	my ($exe)= grep { -f $_  } map { "${_}\\PowerShell.exe" } split /;/, $ENV{PATH};
 	defined $exe or croak "Can't locate PowerShell.exe in PATH: $ENV{PATH}";
+	$log->debug("Found PowerShell.exe at $exe") if $log->is_debug;
 	return $exe;
 }
 
@@ -223,6 +225,8 @@ sub begin_command {
 		$boundary= sprintf('END_COMMAND_%d_%X_%s', ++$self->{_command_seq_number}, time, rand)
 	} while index($command, $boundary) >= 0;
 	push @{ $self->_command_boundary }, $boundary;
+	$log->debug(qq{  PowerShell: send command $command })
+		if $log->is_debug && !$log->is_trace;
 	$command .= "\r\n" unless $command =~ /\r\n$/;
 	$self->write_all($command);
 	$self->write_all("echo $boundary;\r\n");
@@ -252,8 +256,11 @@ sub collect_command {
 		$self->read_more;
 	}
 	$self->{rbuf} =~ s/(.*)\Q$next_boundary\E\r?$//ms;
+	my $out= $1;
 	shift @{$self->_command_boundary};
-	return $1;
+	$log->debug(qq{  PowerShell: recv output $out })
+		if $log->is_debug && !$log->is_trace;
+	return $out;
 }
 
 =head2 run_command
@@ -303,7 +310,11 @@ sub write_all {
 	$self->running or croak "Powershell not started";
 	$self->_wait_or_kill(0, 0) and croak "Powershell exited";
 	while (length($buf) && (($ret= syswrite($self->stdin, $buf))||0) > 0) {
-		#print STDERR "wrote '".substr($buf, 0, $ret)."'\n";
+		if ($log->is_trace) {
+			my $wrote= substr($buf, 0, $ret);
+			$wrote =~ s/([\0-\x1F\x7F])/sprintf("\\x%02X",ord($1))/eg;
+			$log->trace(qq{  PowerShell: wrote input "$wrote"});
+		}
 		substr($buf, 0, $ret)= '';
 	}
 	croak "syswrite: $!" unless defined $ret;
@@ -322,7 +333,11 @@ sub read_more {
 	$self->_wait_or_kill(0, 0) and croak "Powershell exited";
 	my $ret= sysread($self->stdout, my $buf, 4096);
 	defined $ret or croak "sysread: $!";
-	#print STDERR "read '".$buf."\n";
+	if ($log->is_trace) {
+		my $recvd= $buf;
+		$recvd =~ s/([\0-\x1F\x7F])/sprintf("\\x%02X",ord($1))/eg;
+		$log->trace(qq{  PowerShell: recv output "$recvd"});
+	}
 	$self->{rbuf} .= $buf;
 	return $ret;
 }
