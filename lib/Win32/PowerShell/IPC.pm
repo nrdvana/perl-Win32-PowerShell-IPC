@@ -1,4 +1,5 @@
 package Win32::PowerShell::IPC;
+
 use Moo 2;
 use Win32;
 use Win32::API;
