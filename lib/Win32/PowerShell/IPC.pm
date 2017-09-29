@@ -47,6 +47,12 @@ XML, which would be a lot more reliable than text, but I haven't explored
 this yet.  Patches welcome.  (and good grief, haven't they discovered JSON
 over at Redmond, yet?)
 
+This module is specific to Windows, and only tested on Strawberry perl so far.
+I was late to the party learning that PowerShell can run on Linux.  On Linux,
+most of the problems solved by this module aren't problems, so you might as
+well just use IPC::Run.  However, if I get around to implementing the XML
+communication protocol, I'll release another module for Linux.
+
 =head1 ATTRIBUTES
 
 =head2 running
@@ -279,9 +285,9 @@ sub begin_command {
 	push @{ $self->_command_boundary }, $boundary;
 	$log->debug(qq{  PowerShell: send command $command })
 		if $log->is_debug && !$log->is_trace;
-	$command .= "\r\n" unless $command =~ /\r\n$/;
+	$command =~ s/\r?$/\r\n/;
 	$self->write_all($command);
-	$self->write_all("echo $boundary;\r\n");
+	$self->write_all("echo $boundary\r\n");
 }
 
 =head2 collect_command
@@ -304,10 +310,10 @@ sub collect_command {
 	my ($self)= @_;
 	my $next_boundary= $self->_command_boundary->[0]
 		or croak "No command is pending";
-	while ($self->{rbuf} !~ /\Q$next_boundary\E\r?$/) {
+	while ($self->{rbuf} !~ /\Q$next_boundary\E\r\n/) {
 		$self->read_more;
 	}
-	$self->{rbuf} =~ s/(.*)\Q$next_boundary\E\r?$//ms;
+	$self->{rbuf} =~ s/(.*)\Q$next_boundary\E\r\n//s;
 	my $out= $1;
 	shift @{$self->_command_boundary};
 	$log->debug(qq{  PowerShell: recv output $out })
@@ -456,11 +462,12 @@ sub _build_stdout_h {
 sub stdout_readable {
 	my $self= shift;
 	my $n;
-	return PeekNamedPipe($self->stdout_h, undef, 0, undef, $n, undef) && $n > 0;
+	return PeekNamedPipe($self->stdout_h, my $buf, 0, my $got, $n) && $n > 0;
 }
 
 my $peek_named_pipe;
 sub PeekNamedPipe {
+	my ($wh, $buf, $buflen, $got, $avail, $remain)= @_;
 	$peek_named_pipe ||= Win32::API->new("kernel32", 'PeekNamedPipe', 'NPIPPP', 'N')
 		|| die "Can't load PeekNamedPipe from kernel32.dll";
 	# hNamedPipe  - Windows Handle (integer)
@@ -470,24 +477,21 @@ sub PeekNamedPipe {
 	# lpTotalBytesAvail - destination DWORD of number of bytes available.   NULL if not needed.
 	# lpBytesLeftThisMessage - (not relevant for named or anonymous pipes)  NULL if not needed.
 	
-	if ($_[2]) { # if buffer length specified and nonzero, make buffer that long.
-		$_[1]= "\0" x $_[2];
-	}
-	my $ret= $peek_named_pipe->Call(
-		$_[0],
-		$_[1],
-		(defined $_[1]? length($_[1]) : 0), # use actual length of buffer
-		(my $got_buf  = pack('L', 0)),
-		(@_ > 4? (my $avail_buf= pack('L', 0)) : undef),
-		(@_ > 5? (my $left_buf = pack('L', 0)) : undef),
-	);
+	# use actual length of buffer if buflen was not specified
+	$buflen= length($buf) if defined $buf and !defined $buflen;
+	# if buffer length specified and buffer was not, make buffer that long
+	$buf= "\0" x $buflen if defined $buflen and (!defined $buf or length($buf) < $buflen);
+	$got=    pack('L', 0);
+	$avail=  pack('L', 0);
+	$remain= pack('L', 0);
+	my $ret= $peek_named_pipe->Call($wh, $buf, $buflen, $got, $avail, $remain);
+	# Only overwrite the "out" arguments if the call succeeded
 	if ($ret) {
-		# Decode each of the DWORDs that were not passed as NULL
-		my $got= unpack('L', $got_buf);
-		substr($_[1], $got > 0? $got : 0)= '' if defined $_[1];
+		$got= unpack('L', $got);
+		$_[1]= substr($buf, 0, $got > 0? $got : 0) if defined $_[1];
 		$_[3]= $got if @_ > 3;
-		$_[4]= unpack('L', $avail_buf) if @_ > 4;
-		$_[5]= unpack('L', $left_buf ) if @_ > 5;
+		$_[4]= unpack('L', $avail) if @_ > 4;
+		$_[5]= unpack('L', $remain) if @_ > 5;
 	}
 	return $ret;
 }
